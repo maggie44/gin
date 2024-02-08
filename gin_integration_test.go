@@ -7,6 +7,8 @@ package gin
 import (
 	"bufio"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"html/template"
 	"io"
@@ -20,8 +22,57 @@ import (
 	"testing"
 	"time"
 
+	"github.com/quic-go/quic-go/http3"
 	"github.com/stretchr/testify/assert"
 )
+
+func testQuicRequest(t *testing.T, responseBody string, responseStatus int, addr, cert string) {
+	caCertRaw, err := os.ReadFile(cert)
+	if err != nil {
+		t.Fatal("failed to read certificate: %w", err)
+	}
+
+	p, _ := pem.Decode(caCertRaw)
+	if p.Type != "CERTIFICATE" {
+		t.Fatal("failed to decode certificate")
+	}
+
+	caCert, err := x509.ParseCertificate(p.Bytes)
+	if err != nil {
+		t.Fatal("failed to parse certificate: %w", err)
+	}
+
+	certPool := x509.NewCertPool()
+	certPool.AddCert(caCert)
+
+	roundTripper := &http3.RoundTripper{
+		TLSClientConfig: &tls.Config{
+			RootCAs:            certPool,
+			InsecureSkipVerify: true,
+		},
+	}
+	defer roundTripper.Close()
+
+	hclient := &http.Client{
+		Transport: roundTripper,
+	}
+
+	resp, err := hclient.Get(addr)
+	if err != nil {
+		t.Fatal("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal("failed to read response body: %w", err)
+	}
+
+	assert.Equal(t, responseStatus, resp.StatusCode, "should get a "+http.StatusText(responseStatus))
+	if responseStatus == resp.StatusCode {
+		assert.Equal(t, responseBody, string(body), "resp body should match")
+	}
+}
 
 // params[0]=url example:http://127.0.0.1:8080/index (cannot be empty)
 // params[1]=response status (custom compare status) default:"200 OK"
